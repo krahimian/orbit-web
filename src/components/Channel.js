@@ -8,6 +8,7 @@ import ChannelControls from 'components/ChannelControls'
 import NewMessageNotification from 'components/NewMessageNotification'
 import Dropzone from 'react-dropzone'
 import MessageStore from 'stores/MessageStore'
+import ChannelStore from 'stores/ChannelStore'
 import UIActions from 'actions/UIActions'
 import ChannelActions from 'actions/ChannelActions'
 import Profile from "components/Profile"
@@ -15,12 +16,14 @@ import 'styles/Channel.scss'
 import Logger from 'logplease'
 const logger = Logger.create('Channel', { color: Logger.Colors.Cyan })
 
+window.LOG = 'none'
+
 class Channel extends React.Component {
   constructor(props) {
     super(props)
 
     this.state = {
-      peers: 0,
+      peers: [],
       channelChanged: true,
       channelName: null,
       messages: [],
@@ -41,7 +44,7 @@ class Channel extends React.Component {
 
     this.peersPollTimer = null
     this.scrollTimer = null
-    this.topMargin = 120
+    this.topMargin = 240
     this.bottomMargin = 20
 
     this.onShowProfile = this.onShowProfile.bind(this)
@@ -55,7 +58,7 @@ class Channel extends React.Component {
       || this.state.channelName != nextState.channelName
       || this.state.dragEnter != nextState.dragEnter
       || this.state.loading != nextState.loading
-      || this.state.peers != nextState.peers
+      || this.state.peers.length != nextState.peers.length
       || this.state.showUserProfile != nextState.showUserProfile
   }
 
@@ -71,6 +74,7 @@ class Channel extends React.Component {
       })
       UIActions.focusOnSendMessage()
       ChannelActions.loadMessages(nextProps.channel)
+      if (this.peersPollTimer) clearInterval(this.peersPollTimer)
     }
 
     this.setState({
@@ -82,26 +86,18 @@ class Channel extends React.Component {
   }
 
   componentDidMount() {
-    if (this.state.channelName) {
-      this.peersPollTimer = setInterval(() => {
-        if (MessageStore.orbit) {
-          MessageStore.orbit._ipfs.pubsub.peers(this.state.channelName)
-            .then((peers) => this.setState({ peers: peers.length }))
-            .catch((e) => {})
-        }
-      }, 1000)
-    }
-
+    this.unsubscribeFromChannelStore = ChannelStore.listen(this.onPeers.bind(this))
     this.unsubscribeFromMessageStore = MessageStore.listen(this.onNewMessages.bind(this))
     this.unsubscribeFromErrors = UIActions.raiseError.listen(this._onError.bind(this))
     this.stopListeningChannelState = ChannelActions.reachedChannelStart.listen(this._onReachedChannelStart.bind(this))
     this.node = this.refs.MessagesView
     this.unsubscribeFromLoadingStart = UIActions.startLoading.listen((channel) => {
-      if (channel === this.state.channelName)
+      if (channel === this.state.channelName && !this.state.loading) {
         this.setState({ loading: true })
+      }
     })
     this.unsubscribeFromLoadingStop = UIActions.stopLoading.listen((channel) => {
-      if (channel === this.state.channelName)
+      if (channel === this.state.channelName && this.state.loading)
         this.setState({ loading: false })
     })
   }
@@ -117,6 +113,7 @@ class Channel extends React.Component {
   componentWillUnmount() {
     clearTimeout(this.timer)
     clearTimeout(this.scrollTimer)
+    this.unsubscribeFromChannelStore()
     this.unsubscribeFromMessageStore()
     this.unsubscribeFromErrors()
     this.stopListeningChannelState()
@@ -125,27 +122,47 @@ class Channel extends React.Component {
     this.setState({ messages: [] })
   }
 
+  onPeers(channels, peers) {
+    const p = peers[this.state.channelName]
+    if (p !== undefined && p.length !== this.state.peers.length)
+      this.setState({ peers: p || [] })
+  }
+
   onNewMessages(channel: string, messages) {
     if(channel !== this.state.channelName)
       return
 
-    this.node = this.refs.MessagesView
-    if(this.node && this.node.scrollHeight - this.node.scrollTop + this.bottomMargin > this.node.clientHeight
-      && this.node.scrollHeight > this.node.clientHeight + 1
-      && this.state.messages.length > 0 && last(messages).meta.ts > last(this.state.messages).meta.ts
-      && this.node.scrollHeight > 0) {
-      this.setState({
-        unreadMessages: this.state.unreadMessages + 1
-      })
-    }
+    // THIS IS ADDING A LOT OF CYCLES TO EACH FRAME!!
 
-    this.setState({ messages: messages })
+    // this.node = this.refs.MessagesView
+    // if(this.node && this.node.scrollHeight - this.node.scrollTop + this.bottomMargin > this.node.clientHeight
+    //   && this.node.scrollHeight > this.node.clientHeight + 1
+    //   && this.state.messages.length > 0 && last(messages).meta.ts > last(this.state.messages).meta.ts
+    //   && this.node.scrollHeight > 0) {
+    //   this.setState({
+    //     unreadMessages: this.state.unreadMessages + 1
+    //   })
+    // }
+
+    const prevLength = this.state.messages.length
+    setImmediate(() => {
+      this.setState({ messages: messages }, () => {
+        if (messages.length > prevLength) {
+          // Load more history to the "buffer"
+          if(this.loadMoreTimeout) clearTimeout(this.loadMoreTimeout)
+          this.loadMoreTimeout = setTimeout(() => {
+            if(this._shouldLoadMoreMessages())
+              this.loadOlderMessages()
+          }, 30)
+        }
+      })
+    })
   }
 
-  sendMessage(text: string, replyto: string) {
+  sendMessage(text: string, replyto: string, cb) {
     if(text !== '') {
-      ChannelActions.sendMessage(this.state.channelName, text, replyto)
-      this.setState({ replyto: null })
+      ChannelActions.sendMessage(this.state.channelName, text, replyto, cb)
+      // this.setState({ replyto: null })
     }
   }
 
@@ -154,10 +171,10 @@ class Channel extends React.Component {
       ChannelActions.addFile(this.state.channelName, source)
   }
 
-  loadOlderMessages() {
-    if(!this.state.loading) {
-      ChannelActions.loadMoreMessages(this.state.channelName)
-    }
+  loadOlderMessages(force) {
+    // if(!this.state.loading) {
+      ChannelActions.loadMoreMessages(this.state.channelName, force)
+    // }
   }
 
   componentWillUpdate() {
@@ -190,11 +207,11 @@ class Channel extends React.Component {
 
     // Wait for the render (paint) cycle to finish before checking.
     // The DOM element sizes (ie. scrollHeight and clientHeight) are not updated until the paint cycle finishes.
-    if(this.loadMoreTimeout) clearTimeout(this.loadMoreTimeout)
-    this.loadMoreTimeout = setTimeout(() => {
-      if(this._shouldLoadMoreMessages())
-        this.loadOlderMessages()
-    }, 20)
+    // if(this.loadMoreTimeout) clearTimeout(this.loadMoreTimeout)
+    // this.loadMoreTimeout = setTimeout(() => {
+    //   if(this._shouldLoadMoreMessages())
+    //     this.loadOlderMessages()
+    // }, 30)
   }
 
   _shouldLoadMoreMessages() {
@@ -238,20 +255,21 @@ class Channel extends React.Component {
 
     // After scroll has finished, check if we should load more messages
     // Using timeout here because of OS-applied scroll inertia
-    // this.setState({ loadingText: 'Loading more messages...' })
+    const loadDelay = 100
     this.scrollTimer = setTimeout(() => {
       if(this._shouldLoadMoreMessages())
-        this.loadOlderMessages()
-    }, 800)
-
+        this.loadOlderMessages(true)
+    // this.setState({ loadingText: 'Loading more messages...' })
+    }, loadDelay)
 
     // If we scrolled to the bottom, hide the "new messages" label
-    this.node = this.refs.MessagesView
-    if(this.node.scrollHeight - this.node.scrollTop - 10 <= this.node.clientHeight) {
-      this.setState({
-        unreadMessages: 0
-      })
-    }
+    const hideDelay = 100
+    setTimeout(() => {
+      this.node = this.refs.MessagesView
+      if(this.node.scrollHeight - this.node.scrollTop - 10 <= this.node.clientHeight) {
+        this.setState({ unreadMessages: 0 })
+      }
+    }, hideDelay)
   }
 
   onScrollToBottom() {
@@ -314,11 +332,11 @@ class Channel extends React.Component {
     const { messages, username, channelName, appSettings } = this.state
     const { colorifyUsernames, useEmojis, useMonospaceFont, font, monospaceFont } = appSettings
 
-    const style = {
-      fontFamily: useMonospaceFont ? monospaceFont : font,
-      fontSize: useMonospaceFont ? '0.9em' : '1.0em',
-      fontWeight: useMonospaceFont ? 'normal' : 'bold'
-    }
+    // const style = {
+    //   fontFamily: useMonospaceFont ? monospaceFont : font,
+    //   fontSize: useMonospaceFont ? '0.9em' : '1.0em',
+    //   fontWeight: useMonospaceFont ? 'normal' : 'bold'
+    // }
 
     const elements = messages.map((message) => {
       if (appSettings.useLargeMessage) {
@@ -344,7 +362,6 @@ class Channel extends React.Component {
           highlightWords={[username]}
           colorifyUsername={colorifyUsernames}
           useEmojis={useEmojis}
-          style={style}
         />
       }
     })
@@ -401,7 +418,7 @@ class Channel extends React.Component {
           onSendMessage={this.sendMessage.bind(this)}
           onSendFiles={this.onDrop.bind(this)}
           isLoading={loading}
-          channelMode={this.state.peers + " peers"}
+          channelMode={this.state.peers.length + " peers"}
           appSettings={appSettings}
           theme={theme}
           replyto={replyto}

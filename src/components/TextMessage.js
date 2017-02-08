@@ -53,11 +53,11 @@ function _autolink(items) {
 }
 
 class TextMessage extends React.Component {
-  static propTypes = {
-    text: PropTypes.string,
-    useEmojis: PropTypes.bool,
-    highlightWords: PropTypes.array
-  };
+  // static propTypes = {
+  //   text: PropTypes.string,
+  //   useEmojis: PropTypes.bool,
+  //   highlightWords: PropTypes.array
+  // };
 
   constructor(props) {
     super(props)
@@ -91,7 +91,9 @@ class TextMessage extends React.Component {
         <TransitionGroup
           transitionName='textAnimation'
           transitionAppear={true}
-          transitionAppearTimeout={500}
+          transitionEnter={false}
+          transitionLeave={false}
+          transitionAppearTimeout={200}
           transitionEnterTimeout={0}
           transitionLeaveTimeout={0}
           className='content2'>

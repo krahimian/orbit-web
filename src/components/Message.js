@@ -28,7 +28,7 @@ class Message extends React.Component {
   }
 
   shouldComponentUpdate(nextProps, nextState) {
-    return this.state.post !== nextState.post
+    return (this.state.post !== nextState.post && this.state.post.hash !== nextState.post.hash)
       || this.state.user !== nextState.user
   }
 
